@@ -1,0 +1,300 @@
+import pandas as pd
+import numpy as np
+import os
+
+from sklearn.model_selection import train_test_split
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import accuracy_score, classification_report
+import warnings
+warnings.filterwarnings("ignore")
+
+DATA_PATH = r"C:\Users\Welcome\youth suicide\16BBF41_ALL_LATEST.csv"
+
+if DATA_PATH.endswith(".csv"):
+    df = pd.read_csv(DATA_PATH)
+elif DATA_PATH.endswith((".xls", ".xlsx")):
+    df = pd.read_excel(DATA_PATH)
+numeric_cols = df.select_dtypes(include=["int64", "float64"]).columns
+TARGET_COLUMN = numeric_cols[-1]
+
+df[numeric_cols] = df[numeric_cols].fillna(df[numeric_cols].median())
+cat_cols = df.select_dtypes(include=["object", "category"]).columns
+df[cat_cols] = df[cat_cols].fillna("Unknown")
+
+q1, q2 = df[TARGET_COLUMN].quantile([0.33, 0.66])
+
+def risk_label(x):
+    if x <= q1:
+        return 0
+    elif x <= q2:
+        return 1
+    else:
+        return 2
+
+df["Risk_Level"] = df[TARGET_COLUMN].apply(risk_label)
+
+X = df.drop(columns=[TARGET_COLUMN, "Risk_Level"])
+y = df["Risk_Level"]
+
+num_features = X.select_dtypes(include=["int64", "float64"]).columns
+cat_features = X.select_dtypes(include=["object", "category"]).columns
+
+preprocessor = ColumnTransformer(
+    transformers=[
+        ("num", StandardScaler(), num_features),
+        ("cat", OneHotEncoder(handle_unknown="ignore"), cat_features)
+    ]
+)
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42, stratify=y
+)
+
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Dropout
+from tensorflow.keras.utils import to_categorical
+
+# Transform data (no pipeline here)
+X_train_nn = preprocessor.fit_transform(X_train)
+X_test_nn = preprocessor.transform(X_test)
+
+y_train_cat = to_categorical(y_train, num_classes=3)
+y_test_cat = to_categorical(y_test, num_classes=3)
+
+model = Sequential([
+    Dense(128, activation="relu", input_shape=(X_train_nn.shape[1],)),
+    Dropout(0.3),   # Bayesian uncertainty
+    Dense(64, activation="relu"),
+    Dropout(0.3),
+    Dense(3, activation="softmax")
+])
+
+model.compile(
+    optimizer="adam",
+    loss="categorical_crossentropy",
+    metrics=["accuracy"]
+)
+from sklearn.utils.class_weight import compute_class_weight
+import numpy as np
+
+class_weights = compute_class_weight(
+    class_weight="balanced",
+    classes=np.array([0, 1, 2]),
+    y=y_train
+)
+
+class_weight_dict = {
+    0: class_weights[0],
+    1: class_weights[1],
+    2: class_weights[2]
+}
+from sklearn.utils.class_weight import compute_class_weight
+import numpy as np
+
+class_weights = compute_class_weight(
+    class_weight="balanced",
+    classes=np.array([0, 1, 2]),
+    y=y_train
+)
+
+class_weight_dict = {
+    0: class_weights[0],
+    1: class_weights[1],
+    2: class_weights[2]
+}
+
+model.fit(
+    X_train_nn,
+    y_train_cat,
+    epochs=50,
+    batch_size=32,
+    validation_split=0.2,
+    class_weight=class_weight_dict
+)
+
+
+loss, acc = model.evaluate(X_test_nn, y_test_cat)
+print("Bayesian Neural Network Accuracy:", acc)
+
+bayesian_model = Sequential([
+    Dense(128, activation="relu", input_shape=(X_train_nn.shape[1],)),
+    Dropout(0.3),   # Bayesian uncertainty
+    Dense(64, activation="relu"),
+    Dropout(0.3),
+    Dense(3, activation="softmax")
+])
+
+import joblib
+
+joblib.dump(bayesian_model, "bayesian_suicide_model.pkl")
+joblib.dump(preprocessor, "bayesian_preprocessor.pkl")
+joblib.dump(X.columns.tolist(), "bayesian_feature_columns.pkl")
+
+print("Model saved successfully!")
+
+from tensorflow.keras.models import Sequential
+
+bayesian_model.save("bayesian_suicide_model.keras")
+joblib.dump(preprocessor, "bayesian_preprocessor.pkl")
+joblib.dump(X.columns.tolist(), "bayesian_feature_columns.pkl")
+
+from tensorflow.keras.models import load_model
+import joblib
+
+model = load_model("bayesian_suicide_model.keras")
+preprocessor = joblib.load("bayesian_preprocessor.pkl")
+feature_columns = joblib.load("bayesian_feature_columns.pkl")
+
+print("Model loaded successfully!")
+
+print(type(model))
+
+# DO NOT use X_test directly
+
+X_test_nn = preprocessor.transform(X_test)
+
+y_pred = model.predict(X_test_nn)
+y_pred_classes = y_pred.argmax(axis=1)
+
+from sklearn.metrics import classification_report, confusion_matrix
+
+print(confusion_matrix(y_test, y_pred_classes))
+print(classification_report(y_test, y_pred_classes))
+
+def predict_risk(input_dict):
+    input_df = pd.DataFrame([input_dict])
+
+    # Ensure same columns
+    for col in feature_columns:
+        if col not in input_df.columns:
+            input_df[col] = None
+
+    input_df = input_df[feature_columns]
+
+    X_new = preprocessor.transform(input_df)
+    probs = model.predict(X_new)[0]
+    risk_class = probs.argmax()
+
+    labels = {0: "Low Risk", 1: "Medium Risk", 2: "High Risk"}
+    return labels[risk_class], probs
+
+# Symptom → Cause mapping (simple & editable)
+SYMPTOM_MAP = {
+    "exam stress": ("Academic Stress", "Exam Failure"),
+    "academic stress": ("Academic Stress", "Exam Failure"),
+    "feels hopeless": ("Mental Health Issues", "Depression"),
+    "depression": ("Mental Health Issues", "Depression"),
+    "anxiety": ("Mental Health Issues", "Anxiety"),
+    "family pressure": ("Family Problems", "Parental Pressure"),
+    "financial stress": ("Economic Problems", "Debt"),
+    "job loss": ("Unemployment", "Job Loss"),
+    "relationship breakup": ("Relationship Issues", "Breakup"),
+}
+def predict_risk_from_symptoms(symptoms_text):
+    symptoms_text = symptoms_text.lower()
+
+    cause, sub_cause = "Other Causes", "Unknown"
+
+    for key in SYMPTOM_MAP:
+        if key in symptoms_text:
+            cause, sub_cause = SYMPTOM_MAP[key]
+            break
+
+    if cause == "Critical":
+        risk = "High"
+        probabilities = {"Low": 0.05, "Medium": 0.15, "High": 0.80}
+    elif cause in ["Mental Health", "Stress Related"]:
+        risk = "Medium"
+        probabilities = {"Low": 0.25, "Medium": 0.55, "High": 0.20}
+    else:
+        risk = "Low"
+        probabilities = {"Low": 0.70, "Medium": 0.25, "High": 0.05}
+
+    return risk, probabilities
+
+# 👇 YOU ONLY CHANGE THESE VALUES
+
+USER_GENDER = "Female"
+USER_AGE_GROUP = "20-24"
+USER_EMPLOYMENT = "Student"
+
+USER_SYMPTOMS = input("Enter symptoms: ")
+
+risk, probabilities = predict_risk_from_symptoms(USER_SYMPTOMS)
+
+print("\nPredicted Risk Level:", risk)
+print("Probabilities:", probabilities)
+
+from sklearn.model_selection import train_test_split
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42, stratify=y
+)
+
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+
+num_cols = X.select_dtypes(include=["int64", "float64"]).columns
+cat_cols = X.select_dtypes(include=["object"]).columns
+
+preprocessor = ColumnTransformer([
+    ("num", StandardScaler(), num_cols),
+    ("cat", OneHotEncoder(handle_unknown="ignore"), cat_cols)
+])
+
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+
+def evaluate(y_true, y_pred, model_name):
+    return {
+        "Model": model_name,
+        "Accuracy": accuracy_score(y_true, y_pred),
+        "Precision": precision_score(y_true, y_pred, average="weighted"),
+        "Recall": recall_score(y_true, y_pred, average="weighted"),
+        "F1 Score": f1_score(y_true, y_pred, average="weighted")
+    }
+
+from sklearn.naive_bayes import GaussianNB
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+
+# Separate preprocessor for Naive Bayes
+preprocessor_nb = ColumnTransformer([
+    ("num", StandardScaler(), num_cols),
+    ("cat", OneHotEncoder(handle_unknown="ignore", sparse_output=False), cat_cols)
+])
+
+nb_pipeline = Pipeline([
+    ("preprocess", preprocessor_nb),
+    ("model", GaussianNB())
+])
+
+nb_pipeline.fit(X_train, y_train)
+y_pred_nb = nb_pipeline.predict(X_test)
+
+nb_results = evaluate(y_test, y_pred_nb, "Naive Bayes")
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+print("y_test shape:", y_test.shape)
+print("y_pred shape:", y_pred.shape)
+print("NaNs in y_test:", np.isnan(y_test).sum())
+print("NaNs in y_pred:", np.isnan(y_pred).sum())
+
+from sklearn.metrics import accuracy_score, precision_score
+
+print("Accuracy :", accuracy_score(y_test, y_pred_nb  ))
+print("Precision:", precision_score(y_test,y_pred_nb , average="weighted", zero_division=0))
+
+from sklearn.metrics import ConfusionMatrixDisplay
+
+ConfusionMatrixDisplay.from_predictions(y_test, y_pred_nb )
+plt.title("Bayesian Model – Confusion Matrix")
+plt.show()
+
+
